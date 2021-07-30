@@ -180,7 +180,6 @@ Shader "Custom/#SCRIPTNAME#"
 #else
                 half4 shadowMask = half4(1, 1, 1, 1);
 #endif
-                shadowMask = 1;
 
                 float smoothness = exp2(10 * specular.a + 1);
 
