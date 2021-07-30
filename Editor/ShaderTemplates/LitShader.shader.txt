@@ -102,12 +102,11 @@ Shader "Custom/#SCRIPTNAME#"
                 half3 normalWS          : TEXCOORD3;   // World-space normal
                 half3 tangentWS         : TEXCOORD4;   // World-space tangent
                 half3 bitangentWS       : TEXCOORD5;   // World-space bitangent
-                half3 viewDirectionWS   : TEXCOORD6;   // World-space view direction
 
 #ifdef REQUIRES_VERTEX_SHADOW_COORD_INTERPOLATOR
-                float4 shadowCoord      : TEXCOORD7;   // Vertex shadow coords if required
+                float4 shadowCoord      : TEXCOORD6;   // Vertex shadow coords if required
 #endif
-                half fogFactor          : TEXCOORD8;   // Fog factor
+                half fogFactor          : TEXCOORD7;   // Fog factor
                 float4 positionCS       : SV_POSITION; // Clip-space position
 
                 UNITY_VERTEX_INPUT_INSTANCE_ID
@@ -141,7 +140,6 @@ Shader "Custom/#SCRIPTNAME#"
                 output.uv = TRANSFORM_TEX(input.uv, _BaseMap);
                 output.positionCS = positionCS;
                 output.positionWS = positionWS;
-                output.viewDirectionWS = GetWorldSpaceViewDir(positionWS);
                 output.normalWS = normalWS;
                 output.tangentWS = tangentWS;
                 output.bitangentWS = bitangentWS;
@@ -169,7 +167,8 @@ Shader "Custom/#SCRIPTNAME#"
                 specularColor += lightColor * specular * specularFactor;
             }
 
-            half4 LightingBlinnPhong(InputData inputData, half3 albedo, half4 specular, half3 emission, half alpha)
+
+            half4 LightingBlinnPhong(InputData inputData, SurfaceData surfaceData)
             {
                 // Basic BlinnPhong lighting based on UniversalFragmentBlinnPhong function found in
                 // Packages/com.unity.render-pipelines.universal/ShaderLibrary/Lighting.hlsl
@@ -180,33 +179,32 @@ Shader "Custom/#SCRIPTNAME#"
 #else
                 half4 shadowMask = half4(1, 1, 1, 1);
 #endif
-
-                float smoothness = exp2(10 * specular.a + 1);
-
-                half3 diffuseColor = 0;
-                half3 specularColor = 0;
+                float smoothness = exp2(10 * surfaceData.smoothness + 1);
 
                 // Main light
+                half3 mainLightDiffuseColor = 0;
+                half3 mainLightSpecularColor = 0;
                 Light mainLight = GetMainLight(inputData.shadowCoord, inputData.positionWS, shadowMask);
                 MixRealtimeAndBakedGI(mainLight, inputData.normalWS, inputData.bakedGI);
-                LightingDiffuseSpecular(diffuseColor, specularColor, mainLight, inputData.normalWS, inputData.viewDirectionWS, specular.rgb, smoothness);
-                diffuseColor += inputData.bakedGI;
+                LightingDiffuseSpecular(mainLightDiffuseColor, mainLightSpecularColor, mainLight, inputData.normalWS, inputData.viewDirectionWS, surfaceData.specular, smoothness);
 
                 // Additional lights
+                half3 additionalLightsDiffuseColor = 0;
+                half3 additionalLightsSpecularColor = 0;
 #ifdef _ADDITIONAL_LIGHTS
                 int additionalLightCount = GetAdditionalLightsCount();
                 for (int lightIndex = 0; lightIndex < additionalLightCount; ++lightIndex)
                 {
                     Light light = GetAdditionalLight(lightIndex, inputData.positionWS, shadowMask);
-                    LightingDiffuseSpecular(diffuseColor, specularColor, light, inputData.normalWS, inputData.viewDirectionWS, specular.rgb, smoothness);
+                    LightingDiffuseSpecular(additionalLightsDiffuseColor, additionalLightsSpecularColor, light, inputData.normalWS, inputData.viewDirectionWS, surfaceData.specular, smoothness);
                 }
 #endif
 
                 // Final color
-                half3 finalColor = diffuseColor * albedo + emission;
-                finalColor += specularColor;
+                half3 finalColor = (mainLightDiffuseColor + additionalLightsDiffuseColor + inputData.bakedGI) * surfaceData.albedo + surfaceData.emission;
+                finalColor += (mainLightSpecularColor + additionalLightsSpecularColor);
 
-                return half4(finalColor, alpha);
+                return half4(finalColor, surfaceData.alpha);
             }
 
             half4 frag(Varyings input) : SV_Target
@@ -251,18 +249,32 @@ Shader "Custom/#SCRIPTNAME#"
                 // Basic lighting
                 // Built-in lighting functions can be found in Packages/com.unity.render-pipelines.universal/ShaderLibrary/Lighting.hlsl
                 // Construct InputData
-                InputData inputData;
+                InputData inputData = (InputData)0;
                 inputData.positionWS = input.positionWS;
                 inputData.normalWS = normalWS;
-                inputData.viewDirectionWS = input.viewDirectionWS;
+                inputData.viewDirectionWS = GetWorldSpaceViewDir(input.positionWS);
                 inputData.shadowCoord = shadowCoord;
                 inputData.fogCoord = input.fogFactor;
                 inputData.vertexLighting = 0;
                 inputData.bakedGI = SAMPLE_GI(input.lightmapUV, input.vertexSH, normalWS);
                 inputData.normalizedScreenSpaceUV = GetNormalizedScreenSpaceUV(input.positionCS);
                 inputData.shadowMask = 0;
+
+                // Construct SurfaceData
+                SurfaceData surfaceData = (SurfaceData)0;
+                surfaceData.albedo = color.rgb;
+                surfaceData.alpha = color.a;
+                surfaceData.emission = emission;
+                surfaceData.metallic = 0;
+                surfaceData.occlusion = 1;
+                surfaceData.smoothness = specular.a;
+                surfaceData.specular = specular.rgb;
+                surfaceData.clearCoatMask = 0;
+                surfaceData.clearCoatSmoothness = 1;
+                surfaceData.normalTS = normalTS;
+
                 // Lighting
-                color = LightingBlinnPhong(inputData, color.rgb, specular, emission, color.a);
+                color = LightingBlinnPhong(inputData, surfaceData);
 
                 // Mix fog
                 color.rgb = MixFog(color.rgb, input.fogFactor);
