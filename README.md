@@ -19,5 +19,6 @@ Unity tool to create URP shader files (not shader graphs) from templates, as is 
       - Depth/DepthNormals prepass
       - Light maps
   - All shader templates are SRP Batcher compatible.
+  - All shader templates support the URP Debug Display added in Unity 2021.2.
   
 - If you wish to modify the shader templates, they are located under **Editor/ShaderTemplates**.
