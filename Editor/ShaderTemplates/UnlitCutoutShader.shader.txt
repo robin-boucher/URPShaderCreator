@@ -37,9 +37,14 @@ Shader "Custom/#SCRIPTNAME#"
             #pragma multi_compile_instancing
             // Fog
             #pragma multi_compile_fog
-            
+            // For debug display
+            #pragma multi_compile _ DEBUG_DISPLAY
+
             // URP includes
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
+            // Required for debug display
+            #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/SurfaceData.hlsl"
+            #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Debug/Debugging3D.hlsl"
 
             // Properties
             CBUFFER_START(UnityPerMaterial)
@@ -52,10 +57,20 @@ Shader "Custom/#SCRIPTNAME#"
             TEXTURE2D(_BaseMap);
             SAMPLER(sampler_BaseMap);
 
+            // Required for debug display
+            float4 _BaseMap_TexelSize;
+            float4 _BaseMap_MipInfo;
+
             struct Attributes
             {
                 float2 uv           : TEXCOORD0;
                 float4 positionOS   : POSITION; // Object-space position
+
+#ifdef DEBUG_DISPLAY
+                // Required for debug display
+                float3 normalOS     : NORMAL;   // Object-space normal
+                float4 tangentOS    : TANGENT;  // Object-space tangent
+#endif
 
                 UNITY_VERTEX_INPUT_INSTANCE_ID
             };
@@ -66,6 +81,13 @@ Shader "Custom/#SCRIPTNAME#"
                 half fogFactor          : TEXCOORD1;   // Fog factor
                 float4 positionCS       : SV_POSITION; // Clip-space position
 
+#ifdef DEBUG_DISPLAY
+                // Required for debug display
+                float3 positionWS       : TEXCOORD2;   // World-space position
+                float3 normalWS         : TEXCOORD3;   // World-space normal
+                float3 viewDirectionWS  : TEXCOORD4;   // World-space view direction
+#endif
+                
                 UNITY_VERTEX_INPUT_INSTANCE_ID
                 UNITY_VERTEX_OUTPUT_STEREO
             };
@@ -85,11 +107,25 @@ Shader "Custom/#SCRIPTNAME#"
                 // See Packages/com.unity.render-pipelines.core/ShaderLibrary/SpaceTransforms.hlsl for individual transformation functions
                 VertexPositionInputs positionInputs = GetVertexPositionInputs(input.positionOS.xyz);
                 float4 positionCS = positionInputs.positionCS;
+#ifdef DEBUG_DISPLAY
+                // Variables required for debug display
+                float3 positionWS = positionInputs.positionWS;
+                VertexNormalInputs normalInputs = GetVertexNormalInputs(input.normalOS);
+                float3 normalWS = normalInputs.normalWS;
+                float3 tangentWS = normalInputs.tangentWS;
+                float3 bitangentWS = normalInputs.bitangentWS;
+#endif
 
                 // Set output
                 output.uv = TRANSFORM_TEX(input.uv, _BaseMap);
                 output.positionCS = positionCS;
                 output.fogFactor = ComputeFogFactor(positionCS.z);
+#ifdef DEBUG_DISPLAY
+                // Variables required for debug display
+                output.positionWS = positionWS;
+                output.viewDirectionWS = GetWorldSpaceViewDir(positionWS);
+                output.normalWS = normalWS;
+#endif
 
                 return output;
             }
@@ -108,6 +144,41 @@ Shader "Custom/#SCRIPTNAME#"
                 // Discard if below cutoff threshold
                 clip(color.a - _Cutoff);
 
+#ifdef DEBUG_DISPLAY
+                // Initialize InputData, SurfaceData for use in debug display functions
+                InputData inputData = (InputData)0;
+                inputData.positionWS = input.positionWS;
+                inputData.normalWS = input.normalWS;
+                inputData.viewDirectionWS = input.viewDirectionWS;
+                inputData.shadowCoord = 0;
+                inputData.fogCoord = 0;
+                inputData.vertexLighting = half3(0, 0, 0);
+                inputData.bakedGI = half3(0, 0, 0);
+                inputData.normalizedScreenSpaceUV = 0;
+                inputData.shadowMask = half4(1, 1, 1, 1);
+
+                SETUP_DEBUG_TEXTURE_DATA(inputData, input.uv, _BaseMap);
+
+                SurfaceData surfaceData = (SurfaceData)0;
+                surfaceData.albedo = color.rgb;
+                surfaceData.alpha = color.a;
+                surfaceData.emission = 0;
+                surfaceData.metallic = 0;
+                surfaceData.occlusion = 1;
+                surfaceData.smoothness = 1;
+                surfaceData.specular = 0;
+                surfaceData.clearCoatMask = 0;
+                surfaceData.clearCoatSmoothness = 1;
+                surfaceData.normalTS = half3(0, 0, 1);
+
+                // Return debug display color if enabled
+                half4 debugColor;
+                if (CanDebugOverrideOutputColor(inputData, surfaceData, debugColor))
+                {
+                    return debugColor;
+                }
+#endif
+                
                 // Mix fog
                 color.rgb = MixFog(color.rgb, input.fogFactor);
 

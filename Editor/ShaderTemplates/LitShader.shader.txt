@@ -51,6 +51,9 @@ Shader "Custom/#SCRIPTNAME#"
             #pragma multi_compile_fragment _ _SHADOWS_SOFT
             #pragma multi_compile _ LIGHTMAP_ON
             #pragma multi_compile _ LIGHTMAP_SHADOW_MIXING
+            #pragma multi_compile _ DYNAMICLIGHTMAP_ON
+            // For debug display
+            #pragma multi_compile_fragment _ DEBUG_DISPLAY
 
             // GPU Instancing
             #pragma multi_compile_instancing
@@ -60,6 +63,8 @@ Shader "Custom/#SCRIPTNAME#"
             // URP includes
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Lighting.hlsl"
+            // Required for debug display
+            #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Debug/Debugging3D.hlsl"
 
             // Properties
             CBUFFER_START(UnityPerMaterial)
@@ -83,30 +88,39 @@ Shader "Custom/#SCRIPTNAME#"
             TEXTURE2D(_SpecularMap);
             SAMPLER(sampler_SpecularMap);
 
+            // Required for debug display
+            float4 _BaseMap_TexelSize;
+            float4 _BaseMap_MipInfo;
+
             struct Attributes
             {
-                float2 uv           : TEXCOORD0;
-                float4 positionOS   : POSITION;  // Object-space position
-                float3 normalOS     : NORMAL;    // Object-space normal
-                float4 tangentOS    : TANGENT;   // Object-space tangent
-                float2 lightmapUV   : TEXCOORD1; // Lightmap UV
-
+                float2 uv                   : TEXCOORD0;
+                float4 positionOS           : POSITION;  // Object-space position
+                float3 normalOS             : NORMAL;    // Object-space normal
+                float4 tangentOS            : TANGENT;   // Object-space tangent
+                float2 staticLightmapUV     : TEXCOORD1; // Lightmap UV (static)
+                float2 dynamicLightmapUV    : TEXCOORD2; // Lightmap UV (dynamic)
+                
                 UNITY_VERTEX_INPUT_INSTANCE_ID
             };
 
             struct Varyings
             {
                 float2 uv               : TEXCOORD0;
-                DECLARE_LIGHTMAP_OR_SH(lightmapUV, vertexSH, 1);  // GI (lightmap, ambient light)
+                DECLARE_LIGHTMAP_OR_SH(staticLightmapUV, vertexSH, 1);  // GI (lightmap, ambient light)
                 float3 positionWS       : TEXCOORD2;   // World-space position
                 half3 normalWS          : TEXCOORD3;   // World-space normal
                 half3 tangentWS         : TEXCOORD4;   // World-space tangent
                 half3 bitangentWS       : TEXCOORD5;   // World-space bitangent
-                half3 viewDirectionWS   : TEXCOORD6;   // World-space view direction
 
 #ifdef REQUIRES_VERTEX_SHADOW_COORD_INTERPOLATOR
-                float4 shadowCoord      : TEXCOORD7;   // Vertex shadow coords if required
+                float4 shadowCoord      : TEXCOORD6;   // Vertex shadow coords if required
 #endif
+                
+#ifdef DYNAMICLIGHTMAP_ON
+                float2  dynamicLightmapUV : TEXCOORD7; // Dynamic lightmap UVs
+#endif
+                
                 half fogFactor          : TEXCOORD8;   // Fog factor
                 float4 positionCS       : SV_POSITION; // Clip-space position
 
@@ -136,18 +150,21 @@ Shader "Custom/#SCRIPTNAME#"
                 float3 bitangentWS = normalInputs.bitangentWS;
 
                 // Set output
-                OUTPUT_LIGHTMAP_UV(input.lightmapUV, unity_LightmapST, output.lightmapUV);
+                OUTPUT_LIGHTMAP_UV(input.staticLightmapUV, unity_LightmapST, output.staticLightmapUV);
                 OUTPUT_SH(normalWS, output.vertexSH);
                 output.uv = TRANSFORM_TEX(input.uv, _BaseMap);
                 output.positionCS = positionCS;
                 output.positionWS = positionWS;
-                output.viewDirectionWS = GetWorldSpaceViewDir(positionWS);
                 output.normalWS = normalWS;
                 output.tangentWS = tangentWS;
                 output.bitangentWS = bitangentWS;
 #ifdef REQUIRES_VERTEX_SHADOW_COORD_INTERPOLATOR
                 // Vertex shadow coords if required
                 output.shadowCoord = TransformWorldToShadowCoord(positionWS);
+#endif
+#ifdef DYNAMICLIGHTMAP_ON
+                // Dynamic lightmap
+                output.dynamicLightmapUV = input.dynamicLightmapUV.xy * unity_DynamicLightmapST.xy + unity_DynamicLightmapST.zw;
 #endif
                 output.fogFactor = ComputeFogFactor(positionCS.z);
 
@@ -169,7 +186,7 @@ Shader "Custom/#SCRIPTNAME#"
                 specularColor += lightColor * specular * specularFactor;
             }
 
-            half4 LightingBlinnPhong(InputData inputData, half3 albedo, half4 specular, half3 emission, half alpha)
+            half4 LightingBlinnPhong(InputData inputData, SurfaceData surfaceData)
             {
                 // Basic BlinnPhong lighting based on UniversalFragmentBlinnPhong function found in
                 // Packages/com.unity.render-pipelines.universal/ShaderLibrary/Lighting.hlsl
@@ -180,33 +197,73 @@ Shader "Custom/#SCRIPTNAME#"
 #else
                 half4 shadowMask = half4(1, 1, 1, 1);
 #endif
-
-                float smoothness = exp2(10 * specular.a + 1);
-
-                half3 diffuseColor = 0;
-                half3 specularColor = 0;
+                float smoothness = exp2(10 * surfaceData.smoothness + 1);
 
                 // Main light
+                half3 mainLightDiffuseColor = 0;
+                half3 mainLightSpecularColor = 0;
                 Light mainLight = GetMainLight(inputData.shadowCoord, inputData.positionWS, shadowMask);
                 MixRealtimeAndBakedGI(mainLight, inputData.normalWS, inputData.bakedGI);
-                LightingDiffuseSpecular(diffuseColor, specularColor, mainLight, inputData.normalWS, inputData.viewDirectionWS, specular.rgb, smoothness);
-                diffuseColor += inputData.bakedGI;
+                LightingDiffuseSpecular(mainLightDiffuseColor, mainLightSpecularColor, mainLight, inputData.normalWS, inputData.viewDirectionWS, surfaceData.specular, smoothness);
 
                 // Additional lights
+                half3 additionalLightsDiffuseColor = 0;
+                half3 additionalLightsSpecularColor = 0;
 #ifdef _ADDITIONAL_LIGHTS
                 int additionalLightCount = GetAdditionalLightsCount();
                 for (int lightIndex = 0; lightIndex < additionalLightCount; ++lightIndex)
                 {
                     Light light = GetAdditionalLight(lightIndex, inputData.positionWS, shadowMask);
-                    LightingDiffuseSpecular(diffuseColor, specularColor, light, inputData.normalWS, inputData.viewDirectionWS, specular.rgb, smoothness);
+                    LightingDiffuseSpecular(additionalLightsDiffuseColor, additionalLightsSpecularColor, light, inputData.normalWS, inputData.viewDirectionWS, surfaceData.specular, smoothness);
                 }
 #endif
 
                 // Final color
-                half3 finalColor = diffuseColor * albedo + emission;
-                finalColor += specularColor;
+#ifdef DEBUG_DISPLAY
+                // For debug display, only add colors that are enabled
+                half3 finalColor = 0;
 
-                return half4(finalColor, alpha);
+                if (IsLightingFeatureEnabled(DEBUGLIGHTINGFEATUREFLAGS_MAIN_LIGHT))
+                {
+                    finalColor += mainLightDiffuseColor;
+                }
+
+                if (IsLightingFeatureEnabled(DEBUGLIGHTINGFEATUREFLAGS_ADDITIONAL_LIGHTS))
+                {
+                    finalColor += additionalLightsDiffuseColor;
+                }
+
+                if (IsLightingFeatureEnabled(DEBUGLIGHTINGFEATUREFLAGS_GLOBAL_ILLUMINATION))
+                {
+                    finalColor += inputData.bakedGI;
+                }
+
+                finalColor *= surfaceData.albedo;
+
+                if (IsLightingFeatureEnabled(DEBUGLIGHTINGFEATUREFLAGS_EMISSION))
+                {
+                    finalColor += surfaceData.emission;
+                }
+
+                half3 debugSpecularColor = 0;
+
+                if (IsLightingFeatureEnabled(DEBUGLIGHTINGFEATUREFLAGS_MAIN_LIGHT))
+                {
+                    debugSpecularColor += mainLightSpecularColor;
+                }
+
+                if (IsLightingFeatureEnabled(DEBUGLIGHTINGFEATUREFLAGS_ADDITIONAL_LIGHTS))
+                {
+                    debugSpecularColor += additionalLightsSpecularColor;
+                }
+
+                finalColor += debugSpecularColor;
+#else
+                half3 finalColor = (mainLightDiffuseColor + additionalLightsDiffuseColor + inputData.bakedGI) * surfaceData.albedo + surfaceData.emission;
+                finalColor += (mainLightSpecularColor + additionalLightsSpecularColor);
+#endif
+
+                return half4(finalColor, surfaceData.alpha);
             }
 
             half4 frag(Varyings input) : SV_Target
@@ -251,18 +308,60 @@ Shader "Custom/#SCRIPTNAME#"
                 // Basic lighting
                 // Built-in lighting functions can be found in Packages/com.unity.render-pipelines.universal/ShaderLibrary/Lighting.hlsl
                 // Construct InputData
-                InputData inputData;
+                InputData inputData = (InputData)0;
                 inputData.positionWS = input.positionWS;
                 inputData.normalWS = normalWS;
-                inputData.viewDirectionWS = input.viewDirectionWS;
+                inputData.viewDirectionWS = GetWorldSpaceViewDir(input.positionWS);
                 inputData.shadowCoord = shadowCoord;
                 inputData.fogCoord = input.fogFactor;
                 inputData.vertexLighting = 0;
-                inputData.bakedGI = SAMPLE_GI(input.lightmapUV, input.vertexSH, normalWS);
                 inputData.normalizedScreenSpaceUV = GetNormalizedScreenSpaceUV(input.positionCS);
                 inputData.shadowMask = 0;
+#ifdef DYNAMICLIGHTMAP_ON
+                inputData.bakedGI = SAMPLE_GI(input.staticLightmapUV, input.dynamicLightmapUV, input.vertexSH, normalWS);
+#else
+                inputData.bakedGI = SAMPLE_GI(input.staticLightmapUV, input.vertexSH, normalWS);
+#endif
+#ifdef DEBUG_DISPLAY
+                // For debug display
+#ifdef DYNAMICLIGHTMAP_ON
+                inputData.dynamicLightmapUV = input.dynamicLightmapUV.xy;
+#endif
+#ifdef LIGHTMAP_ON
+                inputData.staticLightmapUV = input.staticLightmapUV;
+#else
+                inputData.vertexSH = input.vertexSH;
+#endif
+#endif
+                
+#ifdef DEBUG_DISPLAY
+                SETUP_DEBUG_TEXTURE_DATA(inputData, input.uv, _BaseMap);
+#endif
+
+                // Construct SurfaceData
+                SurfaceData surfaceData = (SurfaceData)0;
+                surfaceData.albedo = color.rgb;
+                surfaceData.alpha = color.a;
+                surfaceData.emission = emission;
+                surfaceData.metallic = 0;
+                surfaceData.occlusion = 1;
+                surfaceData.smoothness = specular.a;
+                surfaceData.specular = specular.rgb;
+                surfaceData.clearCoatMask = 0;
+                surfaceData.clearCoatSmoothness = 1;
+                surfaceData.normalTS = normalTS;
+
+#ifdef DEBUG_DISPLAY
+                // Return debug display color if enabled
+                half4 debugColor;
+                if (CanDebugOverrideOutputColor(inputData, surfaceData, debugColor))
+                {
+                    return debugColor;
+                }
+#endif
+
                 // Lighting
-                color = LightingBlinnPhong(inputData, color.rgb, specular, emission, color.a);
+                color = LightingBlinnPhong(inputData, surfaceData);
 
                 // Mix fog
                 color.rgb = MixFog(color.rgb, input.fogFactor);
@@ -428,9 +527,13 @@ Shader "Custom/#SCRIPTNAME#"
             #pragma vertex vert
             #pragma fragment frag
 
+            // Keywords
+            // For editor visualization
+            #pragma shader_feature EDITOR_VISUALIZATION
+
             // URP includes
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
-            #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/MetaInput.hlsl"
+            #include "Packages/com.unity.render-pipelines.core/ShaderLibrary/MetaPass.hlsl"
 
             // Properties
             CBUFFER_START(UnityPerMaterial)
@@ -465,6 +568,11 @@ Shader "Custom/#SCRIPTNAME#"
             {
                 float4 positionCS   : SV_POSITION;
                 float2 uv           : TEXCOORD0;
+
+#ifdef EDITOR_VISUALIZATION
+                float2 vizUV        : TEXCOORD1;
+                float4 lightCoord   : TEXCOORD2;
+#endif
             };
 
             Varyings vert(Attributes input)
@@ -472,14 +580,11 @@ Shader "Custom/#SCRIPTNAME#"
                 Varyings output;
 
                 // Set output
-                output.positionCS = MetaVertexPosition(
-                    input.positionOS,
-                    input.uv1,
-                    input.uv2,
-                    unity_LightmapST,
-                    unity_DynamicLightmapST
-                );
+                output.positionCS = UnityMetaVertexPosition(input.positionOS.xyz, input.uv1, input.uv2);
                 output.uv = TRANSFORM_TEX(input.uv0, _BaseMap);
+#ifdef EDITOR_VISUALIZATION
+                UnityEditorVizData(input.positionOS.xyz, input.uv0, input.uv1, input.uv2, output.VizUV, output.LightCoord);
+#endif
 
                 return output;
             }
@@ -491,16 +596,19 @@ Shader "Custom/#SCRIPTNAME#"
                 float2 uv = input.uv;
 
                 // Construct MetaInput data
-                MetaInput metaInput;
+                UnityMetaInput metaInput;
                 // Albedo (base color)
                 metaInput.Albedo = SAMPLE_TEXTURE2D(_BaseMap, sampler_BaseMap, uv).rgb * _BaseColor.rgb;
-                // Specular
-                metaInput.SpecularColor = SAMPLE_TEXTURE2D(_SpecularMap, sampler_SpecularMap, uv).rgb * _SpecularColor.rgb;
                 // Emission
                 metaInput.Emission = SAMPLE_TEXTURE2D(_EmissionMap, sampler_EmissionMap, uv).rgb * _EmissionColor;
+#ifdef EDITOR_VISUALIZATION
+                // For editor visualization
+                metaInput.VizUV = input.vizUV;
+                metaInput.LightCoord = input.lightCoord;
+#endif
 
                 // Final color
-                color = MetaFragment(metaInput);
+                color = UnityMetaFragment(metaInput);
 
                 return color;
             }
