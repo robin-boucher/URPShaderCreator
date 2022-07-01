@@ -68,9 +68,6 @@ Shader "Custom/#SCRIPTNAME#"
                 float _BumpScale;
                 half3 _EmissionColor;
                 half4 _SpecularColor;
-
-                // Properties required by URP ShadowCasterPass.hlsl
-                half _Cutoff;
             CBUFFER_END
 
             // Texture samplers
@@ -319,10 +316,12 @@ Shader "Custom/#SCRIPTNAME#"
                 float _BumpScale;
                 half3 _EmissionColor;
                 half4 _SpecularColor;
-
-                // Properties required by URP ShadowCasterPass.hlsl
-                half _Cutoff;
             CBUFFER_END
+
+            // Properties required by URP ShadowCasterPass.hlsl
+            // This property should be exposed in Properties block and
+            // included in a CBUFFER if your shader supports alpha cutout functionality
+            half _Cutoff;
 
             // URP Shadow Caster pass
             #include "Packages/com.unity.render-pipelines.universal/Shaders/ShadowCasterPass.hlsl"
@@ -365,10 +364,12 @@ Shader "Custom/#SCRIPTNAME#"
                 float _BumpScale;
                 half3 _EmissionColor;
                 half4 _SpecularColor;
-
-                // Properties required by URP DepthOnlyPass.hlsl
-                half _Cutoff;
             CBUFFER_END
+
+            // Properties required by URP DepthOnlyPass.hlsl
+            // This property should be exposed in Properties block and
+            // included in a CBUFFER if your shader supports alpha cutout functionality
+            half _Cutoff;
 
             // URP DepthOnlyPass
             #include "Packages/com.unity.render-pipelines.universal/Shaders/DepthOnlyPass.hlsl"
@@ -411,10 +412,12 @@ Shader "Custom/#SCRIPTNAME#"
                 float _BumpScale;
                 half3 _EmissionColor;
                 half4 _SpecularColor;
-
-                // Properties required by URP DepthNormalsPass.hlsl
-                half _Cutoff;
             CBUFFER_END
+
+            // Properties required by URP DepthNormalsPass.hlsl
+            // This property should be exposed in Properties block and
+            // included in a CBUFFER if your shader supports alpha cutout functionality
+            half _Cutoff;
 
             // URP DepthNormalsPass
             #include "Packages/com.unity.render-pipelines.universal/Shaders/DepthNormalsPass.hlsl"
@@ -451,10 +454,12 @@ Shader "Custom/#SCRIPTNAME#"
                 float _BumpScale;
                 half3 _EmissionColor;
                 half4 _SpecularColor;
-
-                // Properties required by URP ShadowCasterPass.hlsl
-                half _Cutoff;
             CBUFFER_END
+
+            // Properties required by URP ShadowCasterPass.hlsl
+            // This property should be exposed in Properties block and
+            // included in a CBUFFER if your shader supports alpha cutout functionality
+            half _Cutoff;
 
             // Texture samplers
             TEXTURE2D(_BaseMap);
